@@ -173,6 +173,16 @@ fwIDAQAB
         // Periodic server re-validation
         self::periodicRevalidation();
 
+        // Re-check after revalidation — blob may have been cleared by the server
+        $data = self::loadLicenseData();
+        if (empty($data)) {
+            return false;
+        }
+        $status = $data['status'] ?? '';
+        if (!in_array($status, ['valid', 'active', 'reissued', 'redistributable'], true)) {
+            return false;
+        }
+
         return true;
     }
 
@@ -533,21 +543,29 @@ fwIDAQAB
 
     private static function saveLicenseBlob(array $data): void
     {
+        global $mybb;
         $blob = self::encryptBlob($data);
         self::saveSettingValue(self::SETTING_BLOB, $blob);
+        $mybb->settings[self::SETTING_BLOB] = $blob; // update in-memory so current request sees it
         rebuild_settings();
     }
 
     private static function clearLicenseBlob(): void
     {
+        global $mybb;
         self::saveSettingValue(self::SETTING_BLOB, '');
         self::saveSettingValue(self::SETTING_CHECK, '');
+        $mybb->settings[self::SETTING_BLOB] = '';    // update in-memory immediately
+        $mybb->settings[self::SETTING_CHECK] = '';   // so loadLicenseData() sees empty blob
+        self::$_cache = null;                         // force cache reload
         rebuild_settings();
     }
 
     private static function saveCheckTimestamp(int $time): void
     {
+        global $mybb;
         self::saveSettingValue(self::SETTING_CHECK, (string)$time);
+        $mybb->settings[self::SETTING_CHECK] = (string)$time;
     }
 
     private static function saveSettingValue(string $name, string $value): void

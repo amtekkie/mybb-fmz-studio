@@ -33,10 +33,21 @@ class FMZLicense
     const SETTING_CHECK = 'fmz_license_check'; // last successful validation timestamp
 
     // How often to re-validate with the server (seconds)
-    const REVALIDATION_INTERVAL = 86400; // 24 hours
+    const REVALIDATION_INTERVAL = 3600; // 1 hour — catches remote deactivation quickly
 
     // Internal salt for key derivation — change before distribution
     const DERIVATION_SALT = 'fmz_2026_studio_v2_kr9Xm4pQ';
+
+    // RSA public key for verifying API response signatures
+    const RSA_PUBLIC_KEY = '-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvMoGW7YJDA6kiR95Nu7S
+Vx3iUaTn7aCrI4mLsd+JpybAyab8Dm98NjSWVQofg5FqX2LJ9PRHYBvVfZHpn+tC
+0DOn1RcUNxsXW0qW/3xhhgZTPq3l+SHsvVvwHeY8cc31A8ZFjHUv0q0mzQvZ03UB
+LrVrQRQY07xxohpP3G4GxQSbOYcHfQHS43xTTxcffrQ/g4U0uJWAivr8T3muxEtN
+OdebX/qoUOMe8AWcn0q3AvRXT+zDMzk2aQdOCbs0EpZeOC55FdkxEaO0UeOuocSl
+JosmM1L684iZDk8gDi0GWPYElAIQzbtAoucZ/cO5EbI5XEbA/9mmEK+9YPPk2jk3
+fwIDAQAB
+-----END PUBLIC KEY-----';
 
     /* ─────────────────────────────────
        Settings Management
@@ -216,6 +227,41 @@ class FMZLicense
     }
 
     /* ─────────────────────────────────
+       RSA Signature Verification
+       ───────────────────────────────── */
+
+    /**
+     * Verify the RSA-SHA256 signature from an API response.
+     * Prevents MITM attacks from forging validation responses.
+     *
+     * @param array $responseData  Decoded API response with 'signature' and 'sig_payload'
+     * @return bool  True if signature is valid or signing not available, false if forged
+     */
+    private static function verifySignature(array $responseData): bool
+    {
+        $signature  = $responseData['signature']  ?? '';
+        $sigPayload = $responseData['sig_payload'] ?? '';
+
+        // If the server didn't include a signature, accept (signing may be disabled)
+        if (empty($signature) || empty($sigPayload)) {
+            return true;
+        }
+
+        $publicKey = openssl_pkey_get_public(self::RSA_PUBLIC_KEY);
+        if (!$publicKey) {
+            return true; // Can't verify without a valid public key — don't break functionality
+        }
+
+        $sigBinary = base64_decode($signature, true);
+        if ($sigBinary === false) {
+            return false;
+        }
+
+        $result = openssl_verify($sigPayload, $sigBinary, $publicKey, OPENSSL_ALGO_SHA256);
+        return ($result === 1);
+    }
+
+    /* ─────────────────────────────────
        API Calls
        ───────────────────────────────── */
 
@@ -237,6 +283,16 @@ class FMZLicense
 
         $data   = $response['data'];
         $status = $data['status'] ?? 'invalid';
+
+        // Verify RSA signature from the server
+        if (!self::verifySignature($data)) {
+            return [
+                'success' => false,
+                'status'  => 'invalid',
+                'message' => 'License server response signature verification failed. Possible tampering detected.',
+                'data'    => $data,
+            ];
+        }
 
         if (in_array($status, ['valid', 'active', 'reissued', 'redistributable'], true)) {
             // Normalize 'active' to 'valid' for local storage consistency
@@ -321,11 +377,38 @@ class FMZLicense
         ]);
 
         if (!$response['success']) {
+            // Server returned an error — check if the license has been revoked/deactivated
+            $errStatus = $response['data']['status'] ?? '';
+            if (in_array($errStatus, ['invalid', 'expired', 'revoked', 'inactive', 'deactivated', 'suspended'], true)) {
+                self::clearLicenseBlob();
+                self::$_cache = null;
+            }
             return $response;
         }
 
         $rData  = $response['data'];
         $status = $rData['status'] ?? 'invalid';
+
+        // Verify RSA signature from the server
+        if (!self::verifySignature($rData)) {
+            return [
+                'success' => false,
+                'status'  => 'invalid',
+                'message' => 'License server response signature verification failed.',
+            ];
+        }
+
+        // Handle statuses that mean the license is no longer valid
+        // These statuses indicate remote deactivation from WordPress or expiry
+        if (in_array($status, ['inactive', 'deactivated', 'expired', 'revoked', 'suspended', 'domain_mismatch', 'invalid'], true)) {
+            self::clearLicenseBlob();
+            self::$_cache = null;
+            return [
+                'success' => false,
+                'status'  => $status,
+                'message' => $rData['message'] ?? 'License is no longer valid.',
+            ];
+        }
 
         // Normalize 'active' to 'valid' for local storage
         $localStatus = ($status === 'active') ? 'valid' : $status;
@@ -359,7 +442,9 @@ class FMZLicense
             $result = self::checkStatus();
             if (!$result['success']) {
                 $status = $result['status'] ?? '';
-                if (in_array($status, ['invalid', 'expired', 'revoked', 'domain_mismatch'], true)) {
+                // Any non-valid status clears the license — this catches remote deactivation
+                // from WordPress (inactive/deactivated), admin revocation, expiry, suspension, etc.
+                if (in_array($status, ['invalid', 'expired', 'revoked', 'domain_mismatch', 'inactive', 'deactivated', 'suspended'], true)) {
                     self::clearLicenseBlob();
                     self::$_cache = null;
                 }

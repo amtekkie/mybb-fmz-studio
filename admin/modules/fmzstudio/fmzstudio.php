@@ -1709,6 +1709,18 @@ if ($action === 'license') {
             } else {
                 $errors[] = htmlspecialchars_uni($result['message']);
             }
+        } elseif ($licAction === 'recheck') {
+            $result = FMZLicense::checkStatus();
+            if ($result['success']) {
+                $success = 'License verified successfully. Status: ' . htmlspecialchars_uni($result['status']);
+            } else {
+                $statusMsg = $result['status'] ?? '';
+                if (in_array($statusMsg, ['inactive', 'deactivated', 'suspended', 'revoked', 'expired', 'domain_mismatch'], true)) {
+                    $errors[] = 'Your license has been ' . htmlspecialchars_uni($statusMsg) . ' remotely. Please enter a valid license key to continue using FMZ Studio.';
+                } else {
+                    $errors[] = htmlspecialchars_uni($result['message'] ?: 'License check failed.');
+                }
+            }
         }
     }
 
@@ -1736,6 +1748,11 @@ if ($action === 'license') {
         'redistributable'  => 'Active (Redistributable)',
         'expired'          => 'Expired',
         'invalid'          => 'Invalid',
+        'inactive'         => 'Deactivated',
+        'deactivated'      => 'Deactivated',
+        'suspended'        => 'Suspended',
+        'revoked'          => 'Revoked',
+        'domain_mismatch'  => 'Domain Mismatch',
         'already_active'   => 'Already In Use',
     ];
 
@@ -1774,6 +1791,20 @@ if ($action === 'license') {
 
         $table->output("License Information");
 
+        // Recheck form
+        $recheckForm = new Form("index.php?module=fmzstudio-license", "post");
+        echo $recheckForm->generate_hidden_field('lic_action', 'recheck');
+
+        $form_container = new FormContainer("Verify License");
+        $form_container->output_row(
+            "Recheck License Status",
+            "Contact the license server to verify your license is still valid. This will detect if the license was deactivated, revoked, or expired remotely.",
+            '<button type="submit" class="button"><i class="bi bi-arrow-repeat"></i> Recheck Now</button>'
+        );
+        $form_container->end();
+
+        $recheckForm->end();
+
         // Deactivate form
         $deactivateForm = new Form("index.php?module=fmzstudio-license", "post");
         echo $deactivateForm->generate_hidden_field('lic_action', 'deactivate');
@@ -1792,7 +1823,11 @@ if ($action === 'license') {
         // ── Not licensed: show activation form ──
         if (!empty($currentKey) && empty($errors)) {
             $statusLabel = $statusLabels[$currentStatus] ?? 'Invalid';
-            $page->output_inline_error(['Your current license is <strong>' . htmlspecialchars_uni($statusLabel) . '</strong>. Please enter a valid license key to continue using FMZ Studio.']);
+            if (in_array($currentStatus, ['inactive', 'deactivated', 'suspended', 'revoked'], true)) {
+                $page->output_inline_error(['Your license has been <strong>' . htmlspecialchars_uni($statusLabel) . '</strong> remotely. Please enter a valid license key to continue using FMZ Studio.']);
+            } else {
+                $page->output_inline_error(['Your current license is <strong>' . htmlspecialchars_uni($statusLabel) . '</strong>. Please enter a valid license key to continue using FMZ Studio.']);
+            }
         }
 
         $activateForm = new Form("index.php?module=fmzstudio-license", "post");

@@ -33,7 +33,7 @@ class FMZLicense
     const SETTING_CHECK = 'fmz_license_check'; // last successful validation timestamp
 
     // How often to re-validate with the server (seconds)
-    const REVALIDATION_INTERVAL = 3600; // 1 hour — catches remote deactivation quickly
+    const REVALIDATION_INTERVAL = 300; // 5 minutes — catches remote deactivation quickly
 
     // Internal salt for key derivation — change before distribution
     const DERIVATION_SALT = 'fmz_2026_studio_v2_kr9Xm4pQ';
